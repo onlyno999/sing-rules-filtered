@@ -1,0 +1,61 @@
+name: Update filtered rule sets
+
+on:
+  schedule:
+    # Daily at 03:17 UTC.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Download upstream rule sets and Google ranges
+        run: |
+          mkdir -p work
+          curl -fsSL -o work/geosite-cn.srs https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs
+          curl -fsSL -o work/geoip-cn.srs https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs
+          curl -fsSL -o work/goog.json https://www.gstatic.com/ipranges/goog.json
+
+      - name: Check whether upstream changed
+        id: check
+        run: |
+          cd work
+          sha256sum geosite-cn.srs geoip-cn.srs goog.json > upstream.sha256
+          cd ..
+          if [ -f upstream.sha256 ] && cmp -s upstream.sha256 work/upstream.sha256; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Upstream unchanged; nothing to do."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Filter
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          go build -o work/filter sing-rules-filtered/cmd/filter
+          work/filter geosite work/geosite-cn.srs rule-set/geosite-cn.srs
+          work/filter geoip work/geoip-cn.srs work/goog.json rule-set/geoip-cn.srs
+          cp work/upstream.sha256 upstream.sha256
+
+      - name: Commit if changed
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add rule-set/geosite-cn.srs rule-set/geoip-cn.srs upstream.sha256
+          if git diff --cached --quiet; then
+            echo "Outputs unchanged."
+          else
+            git commit -m "Update filtered rule sets"
+            git push
+          fi
