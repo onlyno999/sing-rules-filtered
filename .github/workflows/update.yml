@@ -26,12 +26,15 @@ jobs:
           curl -fsSL -o work/geoip-cn.srs https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs
           curl -fsSL -o work/goog.json https://www.gstatic.com/ipranges/goog.json
           curl -fsSL -o work/cloud.json https://www.gstatic.com/ipranges/cloud.json
+          curl -fsSL -o work/ip-ranges.json https://ip-ranges.amazonaws.com/ip-ranges.json
+          curl -fsSL -o work/ips-v4.txt https://www.cloudflare.com/ips-v4
+          curl -fsSL -o work/ips-v6.txt https://www.cloudflare.com/ips-v6
 
       - name: Check whether upstream changed
         id: check
         run: |
           cd work
-          sha256sum geosite-cn.srs geoip-cn.srs goog.json cloud.json > upstream.sha256
+          sha256sum geosite-cn.srs geoip-cn.srs goog.json cloud.json ip-ranges.json ips-v4.txt ips-v6.txt > upstream.sha256
           cd ..
           if [ -f upstream.sha256 ] && cmp -s upstream.sha256 work/upstream.sha256; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -45,7 +48,7 @@ jobs:
         run: |
           go build -o work/filter sing-rules-filtered/cmd/filter
           work/filter geosite work/geosite-cn.srs rule-set/geosite-cn.srs
-          work/filter geoip work/geoip-cn.srs rule-set/geoip-cn.srs work/goog.json work/cloud.json
+          work/filter geoip work/geoip-cn.srs rule-set/geoip-cn.srs work/goog.json work/cloud.json work/ip-ranges.json work/ips-v4.txt work/ips-v6.txt
           cp work/upstream.sha256 upstream.sha256
 
       - name: Commit if changed

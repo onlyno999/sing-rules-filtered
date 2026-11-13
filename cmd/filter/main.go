@@ -151,6 +151,122 @@ func loadGooglePrefixes(paths []string) ([]netip.Prefix, error) {
 	return prefixes, nil
 }
 
+type awsRanges struct {
+	Prefixes []struct {
+		IPPrefix string `json:"ip_prefix"`
+		Region   string `json:"region"`
+	} `json:"prefixes"`
+	IPv6Prefixes []struct {
+		IPv6Prefix string `json:"ipv6_prefix"`
+		Region     string `json:"region"`
+	} `json:"ipv6_prefixes"`
+}
+
+// loadAWSPrefixes returns Amazon's published ranges outside
+// its China regions. Entries that overlap China-region
+// space are dropped as well, so genuinely domestic Amazon
+// ranges are never subtracted.
+func loadAWSPrefixes(path string) ([]netip.Prefix, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var doc awsRanges
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	var cnSpace []netip.Prefix
+	var global []netip.Prefix
+	add := func(text, region string) error {
+		prefix, err := netip.ParsePrefix(text)
+		if err != nil {
+			return err
+		}
+		prefix = prefix.Masked()
+		if strings.HasPrefix(region, "cn-") {
+			cnSpace = append(cnSpace, prefix)
+		} else {
+			global = append(global, prefix)
+		}
+		return nil
+	}
+	for _, entry := range doc.Prefixes {
+		if err := add(entry.IPPrefix, entry.Region); err != nil {
+			return nil, err
+		}
+	}
+	for _, entry := range doc.IPv6Prefixes {
+		if err := add(entry.IPv6Prefix, entry.Region); err != nil {
+			return nil, err
+		}
+	}
+	out := make([]netip.Prefix, 0, len(global))
+	for _, prefix := range global {
+		overlapsCN := false
+		for _, cn := range cnSpace {
+			if prefix.Addr().BitLen() == cn.Addr().BitLen() && prefix.Overlaps(cn) {
+				overlapsCN = true
+				break
+			}
+		}
+		if !overlapsCN {
+			out = append(out, prefix)
+		}
+	}
+	return out, nil
+}
+
+// loadTextPrefixes reads a plain-text range list, one CIDR
+// per line (the Cloudflare ips-v4 / ips-v6 format).
+func loadTextPrefixes(path string) ([]netip.Prefix, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var prefixes []netip.Prefix
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(line)
+		if err != nil {
+			return nil, err
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
+}
+
+// loadRangeFile dispatches on the file name: Google range
+// JSON, Amazon ip-ranges.json, or a plain-text CIDR list.
+func loadRangeFile(path string) ([]netip.Prefix, error) {
+	base := path
+	if idx := strings.LastIndex(path, "/"); idx >= 0 {
+		base = path[idx+1:]
+	}
+	switch {
+	case strings.Contains(base, "ip-ranges"):
+		return loadAWSPrefixes(path)
+	case strings.HasPrefix(base, "ips-v"):
+		return loadTextPrefixes(path)
+	default:
+		return loadGooglePrefixes([]string{path})
+	}
+}
+
+func loadStripPrefixes(paths []string) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+	for _, path := range paths {
+		loaded, err := loadRangeFile(path)
+		if err != nil {
+			return nil, err
+		}
+		prefixes = append(prefixes, loaded...)
+	}
+	return prefixes, nil
+}
+
 // subtractPrefix returns base with cut removed, splitting
 // base as needed. Both must be masked and of one family.
 func subtractPrefix(base, cut netip.Prefix) []netip.Prefix {
@@ -201,7 +317,7 @@ func parseCIDR(text string) (netip.Prefix, error) {
 }
 
 func filterGeoIP(inPath, outPath string, rangePaths []string) error {
-	google, err := loadGooglePrefixes(rangePaths)
+	google, err := loadStripPrefixes(rangePaths)
 	if err != nil {
 		return err
 	}
