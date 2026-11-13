@@ -13,13 +13,14 @@
 //     domain_keyword / domain_regex entries mentioning a
 //     Google host token.
 //   - geoip-cn: subtract Google's published IP ranges
-//     (https://www.gstatic.com/ipranges/goog.json) from
+//     (https://www.gstatic.com/ipranges/goog.json and
+//     https://www.gstatic.com/ipranges/cloud.json) from
 //     every ip_cidr entry.
 //
 // Usage:
 //
 //	filter geosite <in.srs> <out.srs>
-//	filter geoip <in.srs> <goog.json> <out.srs>
+//	filter geoip <in.srs> <out.srs> <ranges.json>...
 package main
 
 import (
@@ -121,29 +122,31 @@ type googRanges struct {
 	} `json:"prefixes"`
 }
 
-func loadGooglePrefixes(path string) ([]netip.Prefix, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var doc googRanges
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, err
-	}
-	prefixes := make([]netip.Prefix, 0, len(doc.Prefixes))
-	for _, entry := range doc.Prefixes {
-		text := entry.IPv4Prefix
-		if text == "" {
-			text = entry.IPv6Prefix
-		}
-		if text == "" {
-			continue
-		}
-		prefix, err := netip.ParsePrefix(text)
+func loadGooglePrefixes(paths []string) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
 		}
-		prefixes = append(prefixes, prefix.Masked())
+		var doc googRanges
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return nil, err
+		}
+		for _, entry := range doc.Prefixes {
+			text := entry.IPv4Prefix
+			if text == "" {
+				text = entry.IPv6Prefix
+			}
+			if text == "" {
+				continue
+			}
+			prefix, err := netip.ParsePrefix(text)
+			if err != nil {
+				return nil, err
+			}
+			prefixes = append(prefixes, prefix.Masked())
+		}
 	}
 	return prefixes, nil
 }
@@ -197,8 +200,8 @@ func parseCIDR(text string) (netip.Prefix, error) {
 	return netip.PrefixFrom(addr, addr.BitLen()), nil
 }
 
-func filterGeoIP(inPath, googPath, outPath string) error {
-	google, err := loadGooglePrefixes(googPath)
+func filterGeoIP(inPath, outPath string, rangePaths []string) error {
+	google, err := loadGooglePrefixes(rangePaths)
 	if err != nil {
 		return err
 	}
@@ -270,11 +273,11 @@ func main() {
 		}
 		err = filterGeosite(os.Args[2], os.Args[3])
 	case "geoip":
-		if len(os.Args) != 5 {
-			fmt.Fprintln(os.Stderr, "usage: filter geoip <in.srs> <goog.json> <out.srs>")
+		if len(os.Args) < 5 {
+			fmt.Fprintln(os.Stderr, "usage: filter geoip <in.srs> <out.srs> <ranges.json>...")
 			os.Exit(2)
 		}
-		err = filterGeoIP(os.Args[2], os.Args[3], os.Args[4])
+		err = filterGeoIP(os.Args[2], os.Args[3], os.Args[4:])
 	default:
 		fmt.Fprintln(os.Stderr, "unknown mode:", os.Args[1])
 		os.Exit(2)
